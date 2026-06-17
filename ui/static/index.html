@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bot-suite · dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2230; --border: #2a313c;
+    --text: #e6edf3; --dim: #8b949e; --cyan: #39c5cf; --green: #3fb950;
+    --yellow: #d29922; --red: #f85149; --magenta: #bc8cff; --accent: #2f81f7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text); font-size: 14px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 16px; max-width: 1180px; margin: 0 auto;
+  }
+  h1, h2 { font-weight: 600; }
+  .muted { color: var(--dim); }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .col { flex: 1; min-width: 280px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
+  }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--dim); margin-bottom: 12px; }
+
+  /* Header */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+  }
+  .brand { font-size: 18px; font-weight: 700; }
+  .brand .dot { color: var(--cyan); }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px; border-radius: 20px; font-weight: 600; font-size: 13px;
+    background: var(--panel2); border: 1px solid var(--border);
+  }
+  .status-pill .led { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); }
+  .status-pill.live .led { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 1.6s infinite; }
+  .status-pill.live { color: var(--green); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+  /* Controls */
+  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; }
+  input[type=number], input[type=text], select {
+    width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px; padding: 9px 10px;
+    font-size: 14px; font-family: inherit;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  .field { margin-bottom: 14px; }
+  .delay-row { display: flex; gap: 8px; align-items: center; }
+  .delay-row input { text-align: center; }
+  .hint { font-size: 11px; margin-top: 6px; }
+  input:disabled { opacity: .35; cursor: not-allowed; }
+  .toggle-group { display: flex; gap: 8px; }
+  .toggle-group button {
+    flex: 1; padding: 9px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--dim); cursor: pointer; font-size: 13px;
+    font-family: inherit; transition: .12s;
+  }
+  .toggle-group button.on { background: var(--panel2); color: var(--text); border-color: var(--accent); }
+  .btn {
+    width: 100%; padding: 11px; border-radius: 8px; border: none; cursor: pointer;
+    font-size: 14px; font-weight: 600; font-family: inherit; transition: .12s;
+  }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-run { background: var(--green); color: #06120a; }
+  .btn-run:hover:not(:disabled) { filter: brightness(1.1); }
+  .btn-stop { background: var(--red); color: #1a0606; }
+  .btn-stop:hover:not(:disabled) { filter: brightness(1.1); }
+  .btn-sec {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  }
+  .btn-sec:hover:not(:disabled) { border-color: var(--accent); }
+  .btn-row { display: flex; gap: 8px; }
+  .btn-row .btn { width: auto; flex: 1; }
+
+  /* Stats grid */
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+  .stat { display: flex; align-items: baseline; justify-content: space-between;
+    padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .stat .v { font-weight: 700; font-size: 16px; }
+  .v.cyan { color: var(--cyan); } .v.green { color: var(--green); }
+  .v.yellow { color: var(--yellow); } .v.red { color: var(--red); }
+  .v.magenta { color: var(--magenta); }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--dim); font-weight: 500; padding: 6px 8px;
+    border-bottom: 1px solid var(--border); font-size: 12px; }
+  td { padding: 6px 8px; border-bottom: 1px solid #1b2129; }
+  .tag { padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .tag.success { background: rgba(63,185,80,.15); color: var(--green); }
+  .tag.partial { background: rgba(210,153,34,.15); color: var(--yellow); }
+  .tag.failed  { background: rgba(248,81,73,.15); color: var(--red); }
+  .tag.running { background: rgba(57,197,207,.15); color: var(--cyan); }
+  .tag.pending { background: var(--panel2); color: var(--dim); }
+  .chk { text-align: center; }
+  .yes { color: var(--green); } .no { color: var(--border); }
+
+  /* Log */
+  .log { background: #08090c; border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; font-family: "SF Mono", Menlo, monospace; font-size: 13px;
+    line-height: 1.8; height: 540px; overflow-y: auto; white-space: pre-wrap;
+    overflow-wrap: anywhere; }
+  .log .l-line { color: #cdd6e0; }           /* readable default message */
+  .log .l-time { color: #5b6675; }           /* dimmed timestamp + level */
+  .log .l-err { color: var(--red); } .log .l-warn { color: var(--yellow); }
+  .log .l-ok { color: var(--green); } .log .l-dim { color: var(--dim); }
+
+  /* Modal */
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    display: none; align-items: center; justify-content: center; z-index: 50; }
+  .modal-bg.show { display: flex; }
+  .modal { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px; width: 440px; max-width: 92vw;
+    max-height: 88vh; overflow-y: auto; }
+  .modal h2 { color: var(--text); font-size: 16px; margin-bottom: 16px; }
+
+  /* Toast */
+  #toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    padding: 11px 18px; border-radius: 8px; font-size: 13px; z-index: 100;
+    opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+  #toast.show { opacity: 1; }
+  #toast.ok { border-color: var(--green); } #toast.err { border-color: var(--red); }
+  .sbo-only { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">🤖 bot<span class="dot">·</span>suite</div>
+  <div class="status-pill" id="statusPill"><span class="led"></span><span id="statusText">…</span></div>
+  <div class="muted" id="clock"></div>
+</header>
+
+<div class="row">
+  <!-- LEFT: run controls + business -->
+  <div class="col">
+    <div class="panel">
+      <h2>Run controls</h2>
+      <div class="field">
+        <label>Strategy</label>
+        <div class="toggle-group" id="stratTg">
+          <button data-v="ranking" class="on">🎯 Ranking</button>
+          <button data-v="burst">⚡ Autocomplete burst</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Mode</label>
+        <div class="toggle-group" id="modeTg">
+          <button data-v="fixed" class="on">🔢 Fixed count</button>
+          <button data-v="nonstop">♾️ Non-stop</button>
+        </div>
+      </div>
+      <div class="field" id="sessionsField">
+        <label>Sessions</label>
+        <input type="number" id="sessions" value="10" min="1" max="1000">
+      </div>
+      <div class="field">
+        <label>Delay between sessions (seconds)</label>
+        <div class="delay-row">
+          <input type="number" id="minDelay" value="120" min="0" max="3600">
+          <span class="muted">to</span>
+          <input type="number" id="maxDelay" value="300" min="0" max="3600">
+        </div>
+        <div class="hint muted" id="delayHint"></div>
+      </div>
+      <div class="field">
+        <label>Proxy</label>
+        <div class="toggle-group" id="proxyTg">
+          <button data-v="regular" class="on">🌐 My proxy</button>
+          <button data-v="off">Off</button>
+          <button data-v="free">🆓 Free</button>
+        </div>
+        <div id="freeBox" style="display:none; margin-top:10px;">
+          <button class="btn btn-sec" id="fetchFreeBtn" onclick="fetchFree()">⬇ Fetch free proxies</button>
+          <div class="hint muted" id="freeStatus"></div>
+          <div class="hint" style="color:var(--yellow); margin-top:6px; line-height:1.5;">
+            ⚠️ بطيئة وغير موثوقة وترفع خطر الكشف (IPs داتاسنتر مكشوفة). للتجارب فقط.
+          </div>
+        </div>
+      </div>
+      <div class="field">
+        <label>Browser</label>
+        <div class="toggle-group" id="visTg">
+          <button data-v="headless" class="on">🌙 Headless</button>
+          <button data-v="visible">👁 Visible</button>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-run" id="runBtn" onclick="runBot()">▶ RUN</button>
+        <button class="btn btn-stop" id="stopBtn" onclick="stopBot()">■ STOP</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Active business</h2>
+      <div class="field">
+        <select id="bizSelect"></select>
+      </div>
+      <div class="btn-row" style="margin-bottom:8px">
+        <button class="btn btn-sec" onclick="switchBiz()">✓ Set active</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-sec" onclick="openAdd()">+ Add</button>
+        <button class="btn btn-sec" onclick="openEdit()">✎ Edit</button>
+        <button class="btn btn-sec" onclick="deleteBiz()">🗑 Delete</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Today's stats</h2>
+      <div class="stats" id="stats"></div>
+    </div>
+  </div>
+
+  <!-- RIGHT: sessions + log -->
+  <div class="col" style="flex:1.4">
+    <div class="panel">
+      <h2>Recent sessions</h2>
+      <table>
+        <thead><tr>
+          <th>Time</th><th>Prefix</th><th>Status</th>
+          <th class="chk">AC</th><th class="chk">Dir</th>
+          <th class="chk">Call</th><th class="chk">Pho</th><th style="text-align:right">Dwell</th>
+        </tr></thead>
+        <tbody id="sessions"></tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>Live log</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Business modal (add/edit share it) -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h2 id="modalTitle">Business</h2>
+    <input type="hidden" id="m_id">
+    <div class="field">
+      <label>Type</label>
+      <select id="m_business_type" onchange="toggleSbo()">
+        <option value="traffic">traffic — drive visits / directions / calls</option>
+        <option value="sbo">sbo — boost autocomplete ranking</option>
+      </select>
+    </div>
+    <div class="field"><label>Name *</label><input type="text" id="m_name"></div>
+    <div class="field"><label>Slug * (lowercase-with-dashes)</label><input type="text" id="m_slug"></div>
+    <div class="field"><label>Place ID</label><input type="text" id="m_place_id" placeholder="ChIJ..."></div>
+    <div class="field sbo-only"><label>Search prefix</label><input type="text" id="m_search_prefix"></div>
+    <div class="field sbo-only"><label>Search prefixes (comma-separated)</label><input type="text" id="m_search_prefixes"></div>
+    <div class="field"><label>Match keywords (defaults to name)</label><input type="text" id="m_match_keywords"></div>
+    <div class="field"><label>Exclude keywords (competitors to ignore)</label><input type="text" id="m_exclude_keywords"></div>
+    <div class="row">
+      <div class="field col"><label>Language</label>
+        <select id="m_maps_language"><option value="en">en</option><option value="ar">ar</option></select>
+      </div>
+      <div class="field col"><label>City</label><input type="text" id="m_target_city" placeholder="your city"></div>
+    </div>
+    <div class="btn-row" style="margin-top:6px">
+      <button class="btn btn-sec" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-run" id="modalSave" onclick="saveBusiness()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let STATE = null;
+let modalMode = "add"; // or "edit"
+
+// ── toggles ──
+function wireToggle(groupId) {
+  const g = $(groupId);
+  g.querySelectorAll("button").forEach(b => b.onclick = () => {
+    g.querySelectorAll("button").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+  });
+}
+function toggleVal(groupId) { return $(groupId).querySelector("button.on").dataset.v; }
+wireToggle("proxyTg"); wireToggle("visTg"); wireToggle("modeTg"); wireToggle("stratTg");
+
+// Reflect mode + delay choices in the UI (disable sessions when non-stop, live hint).
+function intVal(id) { const n = parseInt($(id).value, 10); return Number.isFinite(n) ? n : null; }
+function updateRunUI() {
+  const nonstop = toggleVal("modeTg") === "nonstop";
+  $("sessions").disabled = nonstop;
+  const mn = intVal("minDelay") ?? 0, mx = intVal("maxDelay") ?? 0;
+  const gap = (mn === 0 && mx === 0) ? "back-to-back · no delay" : `random ${mn}–${mx}s gap`;
+  $("delayHint").textContent = nonstop ? `♾️ runs until you hit STOP · ${gap}` : `${gap} between sessions`;
+}
+$("modeTg").querySelectorAll("button").forEach(b => b.addEventListener("click", updateRunUI));
+["minDelay", "maxDelay"].forEach(id => $(id).addEventListener("input", updateRunUI));
+updateRunUI();
+
+// Show the free-proxy box only when the "Free" proxy mode is selected.
+function updateProxyUI() { $("freeBox").style.display = (toggleVal("proxyTg") === "free") ? "block" : "none"; }
+$("proxyTg").querySelectorAll("button").forEach(b => b.addEventListener("click", updateProxyUI));
+updateProxyUI();
+
+function fmtAge(s) {
+  if (s == null) return "";
+  if (s < 90) return `${s}s`;
+  if (s < 5400) return `${Math.round(s/60)}m`;
+  return `${Math.round(s/3600)}h`;
+}
+async function fetchFree() {
+  const btn = $("fetchFreeBtn"), orig = btn.textContent;
+  btn.disabled = true; btn.textContent = "⏳ Fetching & testing…";
+  try {
+    const r = await api("POST", "/api/proxies/free/fetch");
+    if (r.ok) toast(`🆓 ${r.working} working (of ${r.candidates} found, ${r.tested} tested)`, r.working ? "ok" : "err");
+    else toast(r.error || "fetch failed", "err");
+    refresh();
+  } catch (e) { toast(e.message, "err"); }
+  finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+function toast(msg, type="") {
+  const t = $("toast"); t.textContent = msg; t.className = "show " + type;
+  setTimeout(() => t.className = "", 2600);
+}
+
+async function api(method, path, body) {
+  const opt = { method, headers: { "Content-Type": "application/json" } };
+  if (body !== undefined) opt.body = JSON.stringify(body);
+  const r = await fetch(path, opt);
+  let data = {};
+  try { data = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(data.detail || data.error || ("HTTP " + r.status));
+  return data;
+}
+
+// ── render ──
+function render(s) {
+  STATE = s;
+  // header
+  const pill = $("statusPill");
+  if (s.running) {
+    pill.className = "status-pill live";
+    $("statusText").textContent = "RUNNING · PID " + s.pid;
+  } else {
+    pill.className = "status-pill";
+    $("statusText").textContent = "idle";
+  }
+  $("runBtn").disabled = s.running;
+  $("stopBtn").disabled = !s.running;
+
+  // business dropdown (preserve selection if user touched it)
+  const sel = $("bizSelect");
+  const prev = sel.value;
+  sel.innerHTML = "";
+  s.businesses.forEach(b => {
+    const o = document.createElement("option");
+    const icon = b.business_type === "sbo" ? "🎯" : "🚗";
+    o.value = b.id;
+    o.textContent = `${icon} ${b.name} [${b.business_type}]${b.is_active ? "  ★" : ""}`;
+    sel.appendChild(o);
+  });
+  const active = s.active ? String(s.active.id) : "";
+  sel.value = (prev && [...sel.options].some(o => o.value === prev)) ? prev : active;
+
+  // stats
+  const st = s.stats || {};
+  const rate = st.success_rate != null ? ` (${st.success_rate}%)` : "";
+  $("stats").innerHTML = `
+    ${statRow("📊 Total", st.total, "cyan")}
+    ${statRow("✅ Success", (st.success||0) + rate, "green")}
+    ${statRow("⚡ Partial", st.partial, "yellow")}
+    ${statRow("❌ Failed", st.failed, "red")}
+    ${statRow("🎯 AC found", st.ac_found, "magenta")}
+    ${statRow("🧭 Directions", st.directions)}
+    ${statRow("📞 Calls", st.calls)}
+    ${statRow("⏱ Avg dwell", (st.avg_dwell != null ? st.avg_dwell + "s" : "—"))}
+  `;
+
+  // free-proxy status
+  const fp = s.free_proxies || {};
+  $("freeStatus").textContent = fp.count
+    ? `✓ ${fp.count} working free proxies cached${fp.age_seconds != null ? " · " + fmtAge(fp.age_seconds) + " ago" : ""}`
+    : "No free proxies yet — click fetch.";
+
+  // sessions
+  const tb = $("sessions");
+  tb.innerHTML = s.sessions.length ? s.sessions.map(r => `
+    <tr>
+      <td class="muted">${r.t || ""}</td>
+      <td>${esc((r.search_prefix||"").slice(0,20))}</td>
+      <td><span class="tag ${r.status||'pending'}">${r.status||"?"}</span></td>
+      <td class="chk">${chk(r.ac)}</td><td class="chk">${chk(r.dir)}</td>
+      <td class="chk">${chk(r.cal)}</td><td class="chk">${chk(r.pho)}</td>
+      <td style="text-align:right">${r.dwell||0}s</td>
+    </tr>`).join("") : `<tr><td colspan="8" class="muted" style="padding:14px">No sessions yet — hit RUN.</td></tr>`;
+
+  // log
+  const log = $("log");
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+  log.innerHTML = (s.log||[]).map(colorLog).join("\n") ||
+    `<span class="l-dim">(no log yet — start the bot with RUN)</span>`;
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+function statRow(k, v, cls="") {
+  return `<div class="stat"><span class="muted">${k}</span><span class="v ${cls}">${v ?? 0}</span></div>`;
+}
+function chk(v) { return v ? '<span class="yes">✓</span>' : '<span class="no">—</span>'; }
+function esc(s) { return (s||"").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function colorLog(line) {
+  // full line (no truncation) — pick a colour by content…
+  let cls = "l-line";
+  if (/ERROR|❌|crashed|Traceback/.test(line)) cls = "l-err";
+  else if (/WARNING|⚠/.test(line)) cls = "l-warn";
+  else if (/✅|🎯|SUCCESS|landed/.test(line)) cls = "l-ok";
+  // …and dim the leading "timestamp [LEVEL]" so the message stands out.
+  const m = line.match(/^(\d{4}-\d\d-\d\d[ T][\d:,]+\s*(?:\[[A-Z]+\])?\s*)([\s\S]*)$/);
+  if (m) return `<span class="l-time">${esc(m[1])}</span><span class="${cls}">${esc(m[2])}</span>`;
+  return `<span class="${cls}">${esc(line)}</span>`;
+}
+
+// ── actions ──
+async function runBot() {
+  const nonstop = toggleVal("modeTg") === "nonstop";
+  try {
+    const r = await api("POST", "/api/run", {
+      sessions: intVal("sessions") || 1,
+      proxy_mode: toggleVal("proxyTg"),
+      visible: toggleVal("visTg") === "visible",
+      continuous: nonstop,
+      burst: toggleVal("stratTg") === "burst",
+      min_delay: intVal("minDelay"),
+      max_delay: intVal("maxDelay"),
+    });
+    const desc = r.continuous ? "non-stop (until STOP)" : `${r.sessions} sessions`;
+    toast(`▶ Started ${desc} on ${r.business} (PID ${r.pid})`, "ok");
+    refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+async function stopBot() {
+  try {
+    const r = await api("POST", "/api/stop");
+    toast(r.stopped ? "■ Bot stopped" : "Bot was not running", "ok");
+    refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+async function switchBiz() {
+  try {
+    await api("POST", "/api/switch", { target: $("bizSelect").value });
+    toast("✓ Active business switched", "ok");
+    refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+async function deleteBiz() {
+  const id = $("bizSelect").value;
+  const opt = [...$("bizSelect").options].find(o => o.value === id);
+  if (!id) return;
+  if (!confirm(`Delete ${opt ? opt.textContent : id}?\nSession history is preserved.`)) return;
+  try {
+    await api("DELETE", "/api/businesses/" + id);
+    toast("🗑 Business deleted", "ok");
+    refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+// ── modal ──
+function toggleSbo() {
+  const sbo = $("m_business_type").value === "sbo";
+  document.querySelectorAll(".sbo-only").forEach(el => el.style.display = sbo ? "block" : "none");
+}
+function fillModal(d) {
+  $("m_id").value = d.id || "";
+  $("m_business_type").value = d.business_type || "traffic";
+  ["name","slug","place_id","search_prefix","search_prefixes",
+   "match_keywords","exclude_keywords","target_city"].forEach(k => $("m_"+k).value = d[k] || "");
+  $("m_maps_language").value = d.maps_language || "en";
+  $("m_target_city").value = d.target_city || "";
+  toggleSbo();
+}
+function openAdd() {
+  modalMode = "add";
+  $("modalTitle").textContent = "➕ Add business";
+  $("m_business_type").disabled = false; $("m_slug").disabled = false;
+  fillModal({ business_type: "traffic", maps_language: "en", target_city: "" });
+  $("modalBg").classList.add("show");
+}
+async function openEdit() {
+  const id = $("bizSelect").value;
+  if (!id) return;
+  try {
+    const d = await api("GET", "/api/businesses/" + id);
+    modalMode = "edit";
+    $("modalTitle").textContent = "✎ Edit business";
+    fillModal(d);
+    // slug + type are immutable
+    $("m_business_type").disabled = true; $("m_slug").disabled = true;
+    $("modalBg").classList.add("show");
+  } catch (e) { toast(e.message, "err"); }
+}
+function closeModal() { $("modalBg").classList.remove("show"); }
+async function saveBusiness() {
+  const payload = {
+    business_type: $("m_business_type").value,
+    name: $("m_name").value.trim(),
+    slug: $("m_slug").value.trim(),
+    place_id: $("m_place_id").value.trim(),
+    search_prefix: $("m_search_prefix").value.trim(),
+    search_prefixes: $("m_search_prefixes").value.trim(),
+    match_keywords: $("m_match_keywords").value.trim(),
+    exclude_keywords: $("m_exclude_keywords").value.trim(),
+    maps_language: $("m_maps_language").value,
+    target_city: $("m_target_city").value.trim(),
+  };
+  if (!payload.name || !payload.slug) { toast("Name and slug are required", "err"); return; }
+  try {
+    if (modalMode === "add") {
+      await api("POST", "/api/businesses", payload);
+      toast("✅ Business created", "ok");
+    } else {
+      // edit: don't send type/slug (immutable)
+      const { business_type, slug, ...fields } = payload;
+      await api("PATCH", "/api/businesses/" + $("m_id").value, fields);
+      toast("✅ Business updated", "ok");
+    }
+    closeModal();
+    refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+// ── loop ──
+async function refresh() {
+  try { render(await api("GET", "/api/state")); }
+  catch (e) { $("statusText").textContent = "API error"; }
+}
+setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
+// 4s poll — Neon is remote (~3-5s/round-trip when waking); avoids stacking requests.
+setInterval(refresh, 4000);
+refresh();
+$("modalBg").addEventListener("click", e => { if (e.target === $("modalBg")) closeModal(); });
+</script>
+</body>
+</html>

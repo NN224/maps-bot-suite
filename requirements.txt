@@ -1,0 +1,40 @@
+# ════════════════════════════════════════════════════════════
+# bot-suite — local automation suite
+# Versions pinned (==) to the exact installed set for reproducible
+# installs. A fresh `pip install -r requirements.txt` will never
+# pull a newer, potentially breaking version.
+# ════════════════════════════════════════════════════════════
+
+# Browser automation (stealth)
+patchright==1.60.1
+playwright==1.60.0          # for codegen + as fallback when patchright misbehaves
+
+# Anti-detection
+browserforge==1.2.4
+# python-ghost-cursor — optional (needs Fortran compiler for bezier dep).
+# The code has a graceful fallback if it's missing.
+# Install manually if you want Bézier mouse paths:
+#   pip install python-ghost-cursor
+
+# Database
+psycopg2-binary==2.9.12      # Neon Postgres
+
+# HTTP
+requests==2.34.2
+httpx==0.28.1
+
+# Utilities
+python-dotenv==1.2.2
+
+# CLI + Rich terminal UI
+typer==0.26.7
+rich==15.0.0
+
+# Local web dashboard (./bot web) uses only the Python standard library
+# (http.server) — no extra packages required.
+
+# Native desktop window for the control panel (./bot app) — OPTIONAL.
+# Uses the OS webview (light, not Electron). On Linux you may also need a
+# system backend (e.g. python3-gi / GTK or PyQt). The browser panel
+# (./bot web) always works without this.
+# pywebview==6.2.1

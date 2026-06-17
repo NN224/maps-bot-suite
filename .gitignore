@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+
+# Virtual env (we may symlink to a sibling project's venv)
+venv
+.venv
+env/
+
+# Secrets
+.env
+*.pem
+
+# Local DB (Neon is source of truth)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite*
+
+# Logs / traces
+logs/
+*.log
+playwright-report/
+test-results/
+traces/
+
+# Browser session recordings (may contain cookies/PII)
+*.nst.json
+.playwright-mcp/
+
+# Ad-hoc manual probe scripts (NOT pytest — see tests/ for the real suite)
+test/
+# NOTE: tests/ (real test suite) is intentionally NOT ignored.
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Build
+*.egg-info/
+dist/
+build/

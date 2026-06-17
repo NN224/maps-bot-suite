@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""bot — Main CLI entry point for bot-suite.
+
+Usage:
+    ./bot                          # interactive (pick business + sessions)
+    ./bot run <n>                  # run n sessions on the active business
+    ./bot status                   # today's stats + active business
+    ./bot log                      # tail live log
+    ./bot stop                     # stop the running bot
+    ./bot biz                      # list businesses
+    ./bot biz add                  # add a new business
+    ./bot biz switch <id|slug>     # set active business
+    ./bot biz edit <id|slug>       # edit fields of an existing business
+    ./bot biz delete <id|slug>     # remove a business (sessions kept)
+    ./bot dash                     # Rich Live Dashboard (real-time, terminal)
+    ./bot web                      # Local web dashboard (clickable control panel)
+"""
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+# Make sibling packages importable
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+# Re-exec under the project venv if launched with a different interpreter
+# (e.g. a pyenv shim on PATH). Keeps `./bot` working without activating the venv.
+# Handles both POSIX (venv/bin/python) and Windows (venv/Scripts/python.exe).
+_VENV_DIR = ROOT / "venv"
+_VENV_PY = _VENV_DIR / "bin" / "python"
+if not _VENV_PY.exists():
+    _win_py = _VENV_DIR / "Scripts" / "python.exe"
+    if _win_py.exists():
+        _VENV_PY = _win_py
+# Re-exec into the project venv UNLESS we're already running inside it. We test
+# sys.prefix (the active environment), not the executable path — a venv's python
+# is a symlink to the base interpreter, so comparing resolved exe paths wrongly
+# matches when the venv was created from the same python that launched us.
+_in_venv = Path(sys.prefix).resolve() == _VENV_DIR.resolve()
+if _VENV_PY.exists() and not _in_venv:
+    os.execv(str(_VENV_PY), [str(_VENV_PY), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+import typer
+from rich.console import Console
+from rich.prompt import Prompt, IntPrompt, Confirm
+from rich.table import Table
+from rich.panel import Panel
+from rich import box
+
+app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=False,
+    help="🤖 bot-suite — Local automation suite (SBO, traffic, etc.)",
+)
+console = Console()
+
+LOG_FILE = "/tmp/bot_suite.log"
+PID_FILE = "/tmp/bot_suite.pid"
+
+# ──────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────
+
+def _is_bot_running() -> int | None:
+    """Return PID if running, else None."""
+    try:
+        r = subprocess.run(
+            ["pgrep", "-f", "scenarios.runner"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if r.returncode == 0:
+            pids = [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+            return pids[0] if pids else None
+    except Exception:
+        pass
+    return None
+
+
+def _list_businesses_table() -> Table:
+    """Build a Rich table of all businesses."""
+    from shared.db import _pg_exec
+    rows = _pg_exec(
+        "SELECT id, slug, name, business_type, is_active "
+        "FROM businesses ORDER BY id", fetchall=True,
+    ) or []
+    table = Table(box=box.SIMPLE_HEAVY, show_lines=False)
+    table.add_column("#", style="cyan", width=4)
+    table.add_column(" ", width=3)
+    table.add_column("Name", style="bold")
+    table.add_column("Slug", style="dim")
+    table.add_column("Type")
+    table.add_column("Active", width=8)
+    for r in rows:
+        icon = "🎯" if r["business_type"] == "sbo" else "🚗"
+        active = "[green]★ ACTIVE[/green]" if r["is_active"] else ""
+        type_color = "yellow" if r["business_type"] == "sbo" else "blue"
+        table.add_row(
+            str(r["id"]), icon, r["name"], r["slug"],
+            f"[{type_color}]{r['business_type']}[/{type_color}]",
+            active,
+        )
+    return table
+
+
+def _active_business_name() -> str:
+    from shared.db import get_active_business
+    b = get_active_business()
+    return b["name"] if b else "(none)"
+
+
+def _today_stats() -> dict:
+    from shared.db import _pg_exec
+    rows = _pg_exec(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success, "
+        "SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS partial, "
+        "SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed, "
+        "SUM(CASE WHEN autocomplete_found THEN 1 ELSE 0 END) AS ac_found, "
+        "SUM(CASE WHEN directions_clicked THEN 1 ELSE 0 END) AS directions, "
+        "SUM(CASE WHEN call_clicked THEN 1 ELSE 0 END) AS calls, "
+        "ROUND(AVG(CASE WHEN status<>'failed' THEN dwell_time_seconds END)::numeric, 1) AS avg_dwell "
+        "FROM bot_sessions WHERE DATE(created_at AT TIME ZONE 'Asia/Dubai') = CURRENT_DATE",
+        fetchall=True,
+    ) or [{}]
+    return rows[0]
+
+
+# ──────────────────────────────────────────────
+# Commands
+# ──────────────────────────────────────────────
+
+@app.command()
+def biz(
+    action: str = typer.Argument("list", help="list | add | switch | edit | delete"),
+    target: str = typer.Argument(None, help="<id|slug> for switch/edit/delete"),
+):
+    """Manage target businesses."""
+    if action == "list":
+        console.print()
+        console.print("🏢 [bold]Businesses[/bold]")
+        console.print(_list_businesses_table())
+
+    elif action == "switch":
+        from shared.db import set_active_business, _pg_exec
+        # No target → interactive picker: show the list, pick by # (or slug).
+        if not target:
+            rows = _pg_exec(
+                "SELECT id, slug, is_active FROM businesses ORDER BY id",
+                fetchall=True,
+            ) or []
+            if not rows:
+                console.print("[yellow]لا يوجد أي بزنس بعد. أضف واحد بـ:[/yellow] [cyan]bot biz add[/cyan]")
+                raise typer.Exit(1)
+            console.print()
+            console.print("🏢 [bold]اختر البزنس لتفعيله:[/bold]")
+            console.print(_list_businesses_table())
+            valid = {str(r["id"]) for r in rows} | {r["slug"] for r in rows}
+            active_id = next((str(r["id"]) for r in rows if r["is_active"]), None)
+            while True:
+                target = Prompt.ask("اكتب الـ [cyan]#[/cyan] أو الـ slug", default=active_id).strip()
+                if target in valid:
+                    break
+                console.print(f"[red]❌ اختيار غير صحيح: {target}[/red]")
+        if set_active_business(target):
+            console.print(f"[green]✅ Switched to '{target}'[/green]")
+            console.print(_list_businesses_table())
+        else:
+            console.print(f"[red]❌ Not found: {target}[/red]")
+            raise typer.Exit(1)
+
+    elif action == "edit":
+        if not target:
+            console.print("[red]Usage: bot biz edit <id|slug>[/red]")
+            console.print("[dim]Tip: bot biz   ← lists all to see the slug[/dim]")
+            raise typer.Exit(1)
+        from shared.db import get_business, _pg_exec, set_active_business, get_active_business
+        biz_row = get_business(target)
+        if not biz_row:
+            console.print(f"[red]❌ Not found: {target}[/red]")
+            raise typer.Exit(1)
+
+        console.print()
+        console.print(Panel(
+            f"📝 [bold]تعديل: {biz_row['name']}[/bold] [dim](slug: {biz_row['slug']})[/dim]\n"
+            f"[dim]اضغط Enter للحقول اللي ما تبي تغيّرها[/dim]",
+            border_style="cyan",
+        ))
+        console.print()
+
+        # Fields the user can edit (slug + business_type stay locked)
+        new = {}
+        new["name"] = Prompt.ask("📛 الاسم", default=biz_row["name"] or "")
+        new["place_id"] = Prompt.ask("📍 Place ID", default=biz_row["place_id"] or "")
+        new["search_prefix"] = Prompt.ask("🔍 search_prefix", default=biz_row["search_prefix"] or "")
+        new["search_prefixes"] = Prompt.ask("🔍 search_prefixes", default=biz_row["search_prefixes"] or "")
+        new["match_keywords"] = Prompt.ask("✅ match_keywords", default=biz_row["match_keywords"] or "")
+        new["exclude_keywords"] = Prompt.ask("🚫 exclude_keywords", default=biz_row["exclude_keywords"] or "")
+        new["maps_language"] = Prompt.ask("🌐 maps_language", choices=["en", "ar"], default=biz_row["maps_language"] or "en")
+        new["target_city"] = Prompt.ask("🏙️  target_city", default=biz_row["target_city"] or "Dubai")
+
+        # Only update fields that actually changed (cleaner UPDATE)
+        changed = {k: v for k, v in new.items() if str(v) != str(biz_row.get(k) or "")}
+        if not changed:
+            console.print("\n[dim]No changes — nothing to save.[/dim]")
+            return
+
+        console.print(f"\n[yellow]Changes ({len(changed)} field(s)):[/yellow]")
+        for k, v in changed.items():
+            old = biz_row.get(k) or ""
+            console.print(f"  {k}: [red]{str(old)[:50]}[/red] → [green]{str(v)[:50]}[/green]")
+
+        if not Confirm.ask("\nحفظ التغييرات؟", default=True):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+        # Build the UPDATE statement
+        sets = ", ".join(f"{k} = %s" for k in changed)
+        params = list(changed.values()) + [biz_row["id"]]
+        _pg_exec(f"UPDATE businesses SET {sets}, updated_at=now() WHERE id = %s", tuple(params))
+        console.print("[green]✅ Saved to Neon[/green]")
+
+        # If this is the currently-active business, re-sync to sbo_config
+        # so the bot picks up the new values on the next run.
+        active = get_active_business()
+        if active and active["id"] == biz_row["id"]:
+            set_active_business(biz_row["id"])
+            console.print("[green]✅ Re-synced sbo_config (was the active business)[/green]")
+        console.print()
+        console.print(_list_businesses_table())
+
+    elif action == "delete":
+        if not target:
+            console.print("[red]Usage: bot biz delete <id|slug>[/red]")
+            raise typer.Exit(1)
+        from shared.db import get_business, _pg_exec
+        biz_row = get_business(target)
+        if not biz_row:
+            console.print(f"[red]❌ Not found: {target}[/red]")
+            raise typer.Exit(1)
+        console.print(f"\n[yellow]⚠️  About to delete:[/yellow] [bold]{biz_row['name']}[/bold] ({biz_row['slug']})")
+        console.print("[dim]Session history in bot_sessions is preserved (only the businesses row is removed).[/dim]")
+        if not Confirm.ask("متأكد؟", default=False):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+        _pg_exec("DELETE FROM businesses WHERE id = %s", (biz_row["id"],))
+        console.print(f"[green]✅ Deleted '{biz_row['slug']}'[/green]")
+
+    elif action == "add":
+        from shared.db import add_business, set_active_business
+        console.print()
+        console.print(Panel("➕ [bold]إضافة بزنس جديد[/bold]", border_style="cyan"))
+        console.print()
+        console.print("🎯 [bold]نوع البزنس:[/bold]")
+        console.print("  [yellow]1) sbo[/yellow]     — ترفع ranking في autocomplete (typing → click)")
+        console.print("  [blue]2) traffic[/blue] — تزيد زيارات/directions/calls (organic search → click)")
+        btype_choice = Prompt.ask("اختر", choices=["1", "2"], default="2")
+        btype = "sbo" if btype_choice == "1" else "traffic"
+
+        name = Prompt.ask("📛 الاسم الكامل")
+        slug = Prompt.ask("🔗 slug")
+        pid = Prompt.ask("📍 Place ID (ChIJ...)")
+        if btype == "sbo":
+            prefix = Prompt.ask("🔍 prefix رئيسي")
+            prefixes = Prompt.ask("🔍 search_prefixes متدرّجة (مفصولة بفواصل)", default=prefix)
+            exclude = Prompt.ask("🚫 منافسين للتجاهل (مفصولين بفواصل)", default="")
+        else:
+            prefix = "traffic"; prefixes = "traffic"; exclude = ""
+        lang = Prompt.ask("🌐 اللغة", choices=["en", "ar"], default="en")
+        city = Prompt.ask("🏙️  المدينة", default="Dubai")
+
+        new_id = add_business(
+            slug=slug, name=name, place_id=pid,
+            search_prefix=prefix, search_prefixes=prefixes,
+            exclude_keywords=exclude, maps_language=lang,
+            target_city=city, match_keywords=name,
+            business_type=btype,
+        )
+        if new_id:
+            console.print(f"[green]✅ Created business #{new_id} [{btype}][/green]")
+            if Confirm.ask("تفعّله الآن كبزنس نشط؟", default=True):
+                set_active_business(new_id)
+                console.print("[green]★ Activated[/green]")
+            console.print(_list_businesses_table())
+        else:
+            console.print("[red]❌ Failed (slug already exists?)[/red]")
+            raise typer.Exit(1)
+
+
+@app.command()
+def status():
+    """Show today's stats + active business + bot process."""
+    s = _today_stats()
+    console.print()
+    console.print(Panel.fit(
+        f"[bold cyan]📊 Today's Stats[/bold cyan]\n"
+        f"  Total       : [bold]{s.get('total', 0)}[/bold]\n"
+        f"  ✅ Success  : [green]{s.get('success', 0)}[/green]\n"
+        f"  ⚡ Partial  : [yellow]{s.get('partial', 0)}[/yellow]\n"
+        f"  ❌ Failed   : [red]{s.get('failed', 0)}[/red]\n"
+        f"  🎯 AC found : [magenta]{s.get('ac_found', 0)}[/magenta]\n"
+        f"  🧭 Directions: {s.get('directions', 0)}\n"
+        f"  📞 Calls    : {s.get('calls', 0)}\n"
+        f"  ⏱️  Avg dwell: {s.get('avg_dwell') or '—'}s",
+        border_style="cyan",
+    ))
+    pid = _is_bot_running()
+    if pid:
+        console.print(f"\n🤖 Bot: [green]RUNNING[/green] (PID {pid})")
+    else:
+        console.print("\n🤖 Bot: [dim]not running[/dim]")
+    console.print(f"\n🎯 Active business: [bold]{_active_business_name()}[/bold]")
+
+
+@app.command()
+def log():
+    """Tail the live bot log."""
+    if not Path(LOG_FILE).exists():
+        console.print(f"[yellow]No log file at {LOG_FILE}[/yellow]")
+        raise typer.Exit(1)
+    console.print(f"📜 Tailing {LOG_FILE} (Ctrl+C to exit)…\n")
+    try:
+        subprocess.run(["tail", "-f", LOG_FILE])
+    except KeyboardInterrupt:
+        pass
+
+
+@app.command()
+def stop():
+    """Stop the running bot."""
+    pid = _is_bot_running()
+    if not pid:
+        console.print("[dim]Bot not running[/dim]")
+        return
+    console.print(f"🛑 Stopping bot (PID {pid})…")
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except Exception:
+        os.kill(pid, signal.SIGTERM)
+    console.print("[green]✅ Stopped[/green]")
+
+
+@app.command()
+def run(
+    sessions: int = typer.Argument(10, help="Number of sessions"),
+    visible: bool = typer.Option(False, "--visible", help="Show the browser window"),
+    foreground: bool = typer.Option(False, "--fg", help="Run in foreground"),
+    no_proxy: bool = typer.Option(False, "--no-proxy", help="Run without proxy (uses your real IP)"),
+    free_proxies: bool = typer.Option(False, "--free-proxies", help="Use cached free public proxies (fetch them in the web UI first)"),
+    continuous: bool = typer.Option(False, "--continuous", "-c", help="Run back-to-back until stopped (ignores N)"),
+    burst: bool = typer.Option(False, "--burst", help="Autocomplete-burst mode (pr_burst scenario) instead of auto"),
+    min_delay: int = typer.Option(None, "--min-delay", help="Min seconds between sessions (overrides config)"),
+    max_delay: int = typer.Option(None, "--max-delay", help="Max seconds between sessions (overrides config)"),
+):
+    """Run N sessions on the active business (defaults to bg+headless+proxy)."""
+    if _is_bot_running():
+        console.print(f"[red]⚠️  Bot already running (PID {_is_bot_running()}). Stop it first: bot stop[/red]")
+        raise typer.Exit(1)
+
+    scenario = "pr_burst" if burst else "auto"
+    cmd = [sys.executable, "-m", "scenarios.runner", scenario, "--sessions", str(sessions)]
+    if not visible:
+        cmd.append("--headless")
+    if no_proxy:
+        cmd.append("--no-proxy")
+    if free_proxies:
+        cmd.append("--free-proxies")
+    if continuous:
+        cmd.append("--continuous")
+    if min_delay is not None:
+        cmd += ["--min-delay", str(min_delay)]
+    if max_delay is not None:
+        cmd += ["--max-delay", str(max_delay)]
+
+    biz = _active_business_name()
+    delay_str = (f"{min_delay if min_delay is not None else '·'}–"
+                 f"{max_delay if max_delay is not None else '·'}s")
+    console.print()
+    console.print(Panel(
+        f"🎯 Business : [bold]{biz}[/bold]\n"
+        f"📊 Sessions : [bold]{'∞ (non-stop)' if continuous else sessions}[/bold]\n"
+        f"⏱  Delay    : {delay_str}\n"
+        f"🖥️  Browser  : {'visible' if visible else 'headless'}\n"
+        f"🌙 Mode     : {'foreground' if foreground else 'background'}\n"
+        f"🌐 Proxy    : {'[red]OFF (your real IP)[/red]' if no_proxy else ('[yellow]FREE (public, low quality)[/yellow]' if free_proxies else '[green]ON (configured)[/green]')}",
+        title="🚀 Starting Bot", border_style="green",
+    ))
+
+    if foreground:
+        # cd to project root so `python -m scenarios.runner` finds the package
+        os.chdir(str(ROOT))
+        os.execvp(cmd[0], cmd)
+    else:
+        # Append (not overwrite) — preserves history across runs.
+        # The session header line below makes it easy to find the boundary.
+        with open(LOG_FILE, "a") as f:
+            from datetime import datetime
+            f.write(f"\n{'='*60}\n=== Batch started {datetime.now().isoformat()} — {sessions} sessions on {biz} ===\n{'='*60}\n")
+            f.flush()
+            proc = subprocess.Popen(
+                cmd, stdout=f, stderr=subprocess.STDOUT,
+                start_new_session=True,
+                cwd=str(ROOT),  # ensure scenarios.runner is importable
+            )
+        Path(PID_FILE).write_text(str(proc.pid))
+        console.print(f"[green]✅ Started (PID {proc.pid})[/green]")
+        console.print(f"   Log: [dim]{LOG_FILE}[/dim]")
+        console.print(f"\n   [cyan]bot log[/cyan]     watch live")
+        console.print(f"   [cyan]bot status[/cyan]  current stats")
+        console.print(f"   [cyan]bot stop[/cyan]    stop")
+
+
+@app.command()
+def dash():
+    """Rich Live Dashboard — refreshes every 5 seconds."""
+    from ui.dashboard import live_dashboard
+    live_dashboard()
+
+
+@app.command()
+def web(
+    port: int = typer.Option(8787, "--port", "-p", help="Port to serve on"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address (local only by default)"),
+):
+    """Launch the local web dashboard (clickable control panel)."""
+    from ui.web import run_server  # stdlib only — no extra deps
+    console.print(Panel.fit(
+        f"🖥️  [bold]Web dashboard[/bold]\n"
+        f"   → [cyan]http://{host}:{port}[/cyan]\n"
+        f"   [dim]local only · Ctrl+C to stop[/dim]",
+        border_style="green",
+    ))
+    run_server(host=host, port=port)
+
+
+@app.command(name="app")
+def app_window(
+    port: int = typer.Option(8787, "--port", "-p", help="Port the panel serves on"),
+):
+    """Open the control panel as a native desktop window (needs pywebview)."""
+    console.print(Panel.fit(
+        "🪟  [bold]Opening native app window…[/bold]\n"
+        "   [dim]close the window to quit · needs pywebview[/dim]",
+        border_style="green",
+    ))
+    from ui.app import launch
+    launch(port=port)
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context):
+    """Interactive launcher when called without arguments."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    # No args = interactive flow
+    pid = _is_bot_running()
+    if pid:
+        console.print(f"\n[yellow]⚠️  Bot already running (PID {pid})[/yellow]")
+        console.print("   Run [cyan]bot stop[/cyan] to stop it, or [cyan]bot status[/cyan] to see progress.\n")
+        raise typer.Exit(1)
+
+    console.print()
+    console.print(Panel.fit("🤖 [bold]bot-suite[/bold] — local automation", border_style="cyan"))
+    console.print()
+    console.print("🏢 [bold]Businesses[/bold]")
+    console.print(_list_businesses_table())
+
+    from shared.db import set_active_business, get_active_business
+    # Validate business choice — keep asking until a valid one is selected.
+    # Accepts either the # column (id) or the slug.
+    while True:
+        choice = Prompt.ask("\n🎯 رقم أو slug البزنس", default="1")
+        try:
+            if set_active_business(choice):
+                break
+            console.print(f"[red]❌ Not found: '{choice}'. اختر رقم (مثلاً 1) أو slug (مثلاً my-business).[/red]")
+        except Exception as e:
+            console.print(f"[red]❌ {e}[/red]")
+
+    biz = get_active_business()
+    console.print(f"[green]✅ {biz['name']}[/green] [dim]({biz['business_type']})[/dim]")
+
+    sessions = IntPrompt.ask("📊 كم جلسة؟", default=10)
+    use_proxy = Confirm.ask("🌐 تستخدم البروكسي (DataImpulse)؟", default=True)
+    run(sessions=sessions, visible=False, foreground=False, no_proxy=not use_proxy)
+
+
+if __name__ == "__main__":
+    app()
